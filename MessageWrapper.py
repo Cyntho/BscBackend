@@ -2,13 +2,14 @@ import json
 
 
 class MessageWrapper:
-    error_id = 0
-    error_code = 0
-    error_type = 0
-    sps_id = 0
-    timestamp = 0
 
-    def __init__(self, error_id, error_code, error_type, sps_id, timestamp):
+    def __init__(self, location: int,
+                 error_id: str,
+                 error_code: int,
+                 error_type: int,
+                 sps_id: int,
+                 timestamp):
+        self.location = location
         self.error_id = error_id
         self.error_code = error_code
         self.error_type = error_type
