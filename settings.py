@@ -11,7 +11,7 @@ class Settings:
         except Exception as e:
             print(e)
 
-    def getLocations(self):
+    def get_locations(self):
         if self.config is None:
             print("Invalid config file.")
             return

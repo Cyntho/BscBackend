@@ -88,7 +88,7 @@ class Mqtt5Service:
         if self.client is None or not self.client.is_connected():
             print("Can't publish messages while the client is disconnected!")
             return
-        self.client.publish(str, message.toJSON(), 1, True)
+        self.client.publish(str, message.to_json(), 1, True)
         self.messages.append(message)
 
     def handleMessagesQuery(self):
@@ -99,7 +99,7 @@ class Mqtt5Service:
 
     def handleSettingsQuery(self):
         data = ""
-        for entry in self.config.getLocations():
+        for entry in self.config.get_locations():
             data += str(entry)
         self.client.publish("res/settings", str(data), qos=1, retain=False)
 
@@ -118,10 +118,10 @@ class Mqtt5Service:
             temp: MessageWrapper = MessageWrapper(
                 location=random.randint(0, 3),
                 error_id=err,
-                error_code=0,
+                status=0,
                 error_type=random.randint(1, 3),
                 sps_id=random.randint(0, 99),
                 timestamp=utc_timestamp
             )
-            print(f"Attempting to publish: {temp.toString()}")
+            print(f"Attempting to publish: {temp.to_string()}")
             self.client.publish(temp, "mqtt/test")

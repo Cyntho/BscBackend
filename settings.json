@@ -26,130 +26,123 @@
 
   "error_messages": [
     {
-      "id": 0,
-      "msg": "err_none",
-      "sps": [-1],
-      "sps_type": 0,
-      "err_type": 0
-    },
-    {
       "id": 1,
       "msg": "Spaltkontrolle",
       "sps": [-1],
       "sps_type": 0,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 2,
       "msg": "Spaltkontrolle Hubwerk",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 3,
       "msg": "Spaltkontrolle Fahrwerk",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 4,
       "msg": "Laufzeitstörung",
       "sps": [1, 2, 18, 19, 20, 21, 22, 28, 29, 31, 32, 44, 45, 56, 78],
       "sps_type": 0,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 5,
       "msg": "Laufzeit Lastachse",
       "sps": [7, 20, 27, 40],
       "sps_type": 0,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 6,
       "msg": "Fehler Feinpositionierung",
       "sps": [1, 2, 8, 9, 21, 22, 28, 29],
       "sps_type": 0,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 7,
       "msg": "Komm.-Fehler Movimot",
       "sps": [7, 20, 27, 40],
       "sps_type": 0,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 8,
       "msg": "Palettenposition links n.i.o",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 9,
       "msg": "Palettenposition rechts n.i.o",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 10,
       "msg": "Feinpositionierung",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 11,
       "msg": "Schienenbremse n.i.o",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 12,
       "msg": "Positionskontrolle",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 13,
       "msg": "Brandalarm",
       "sps": [-1],
       "sps_type": 0,
-      "err_type": 3
+      "err_type": 1
     },
     {
       "id": 14,
       "msg": "Fehlerzähler (1015) Fach voll für Senke",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 2
+      "err_type": 0
     },
     {
       "id": 15,
       "msg": "Fehlerzähler (1016)...",
       "sps": [],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 0
     },
     {
       "id": 16,
       "msg": "Fehlerzähler (1017)",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 0
     },
     {
       "id": 17,
       "msg": "Fehlerzähler (1018)",
       "sps": [101, 514],
       "sps_type": 1,
-      "err_type": 3
+      "err_type": 0
     }
   ]
 }

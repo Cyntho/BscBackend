@@ -39,8 +39,7 @@ class AsyncMqttExample:
 
         self.client = mqtt.Client(client_id=clientID,
                                   transport=transportLayer,
-                                  protocol=mqtt.MQTTv5,
-                                  reconnect_on_failure=True)
+                                  protocol=mqtt.MQTTv5)
         self.client.username_pw_set(username, password)
         self.client.tls_set(
             ca_certs="certs/ca.crt",
@@ -57,12 +56,12 @@ class AsyncMqttExample:
         self.client.socket().setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
 
         for c in range(3):
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             print("Publishing")
             self.got_message = self.loop.create_future()
-            self.client.publish("mqtt/test", b'Hello' * 4000, qos=1)
-            msg = await self.got_message
-            print("Got response with {} bytes".format(len(msg)))
+            self.client.publish("mqtt/test", b'Hello', qos=1)
+            # msg = await self.got_message
+            # print("Got response with {} bytes".format(len(msg)))
             self.got_message = None
 
         self.client.disconnect()
