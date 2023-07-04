@@ -16,3 +16,6 @@
     #@SerializedName("device")   var device: String? = "00",
     #@SerializedName("part")     var part: Int? = -1,
     #@SerializedName("message")  var message: String? = ""
+
+
+https://github.com/harshnative/pysqlitecipher
