@@ -40,7 +40,6 @@ def randomize(cfg: Settings):
         print(f"Caught: {ex}")
 
 
-
 def from_json(data):
     x = json.loads(data)
     return MessageWrapper(**x)

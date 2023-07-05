@@ -1,13 +1,19 @@
 #!/src/usr/python3
+import datetime
 import hashlib
 import io
+import ipaddress
 import os
 import random
 import re
 import ssl
+import time
 import uuid
 
+import MySQLdb
 import paho.mqtt.client
+
+import pymysql
 
 import sqlite3
 import click
@@ -35,41 +41,64 @@ tls_params = aiomqtt.TLSParameters(ca_certs="certs/ca.crt",
 
 # Using ArgParser to handle easier setup
 parser = argparse.ArgumentParser(
-    prog="program",
+    prog="bsc_backend",
     description="BSC Backend"
 )
+# MQTT
 parser.add_argument(
-    "-host",
-    "--hostname",
+    "--mqtt-host",
     default="10.66.66.1",
-    action="store_const",
-    help="Specify the MQTT broker's hostname"
+    action="store",
+    help="Host of mqtt broker"
 )
 parser.add_argument(
-    "-p",
-    "--port",
+    "--mqtt-port",
     default=8883,
-    dest="port",
-    action="store_const",
+    action="store",
     help="Specify the MQTT broker's Port"
+)
+
+# MySQL
+parser.add_argument(
+    "--mysql-host",
+    default="10.66.66.1",
+    action='store',
+    help="Host of mysql auth. server"
+)
+parser.add_argument(
+    "--mysql-port",
+    default=3306,
+    action='store',
+    type=int,
+    help="MySQL server port"
 )
 parser.add_argument(
     "--database",
-    default="./users.db",
+    default="mqtt",
     action="store",
     type=str,
-    help="Specify where user data should be stored (*.db)"
+    help="MySQL database"
 )
 parser.add_argument(
-    "--run",
-    action="store_true",
-    help="Start the server"
+    "--username",
+    action='store',
+    type=str,
+    default="admin",
+    help="MySQL username"
 )
 parser.add_argument(
     "--password",
     action='store',
     type=str,
-    default=""
+    default="public",
+    help="MySQL password"
+)
+
+# Runtime
+parser.add_argument(
+    "--run",
+    action="store_true",
+    help="Start the server"
 )
 parser.add_argument(
     "--setup",
@@ -90,9 +119,10 @@ async def get_settings():
 
 
 async def listen():
-    async with aiomqtt.Client(hostname="10.66.66.1",
+    global args
+    async with aiomqtt.Client(hostname=args.mqtt_host,
                               client_id="broker_listening",
-                              port=8883,
+                              port=args.mqtt_port,
                               username="broker",
                               password="32tz7u8mM",
                               clean_start=paho.mqtt.client.MQTT_CLEAN_START_FIRST_ONLY,
@@ -162,171 +192,311 @@ async def publish_generator():
 
 
 def install():
-    # Choose database file location
-    db_location = click.prompt("Choose database file: ", type=str, default=args.database)
+    conn: pymysql.connections.Connection
+    try:
 
-    # Check if file already exists
-    if os.path.exists(db_location):
-        print(f"{bcolors.WARNING} Attention: This file already exists!")
-        confirmation = click.prompt(f"Would you like to overwrite it? (yes/no) {bcolors.HEADER}", type=str)
-        if confirmation == "yes":
-            print("Deleting file...")
-            try:
-                os.remove(db_location)
-            except IOError:
-                print(f"Unable to remove file {db_location}")
-                input("Press any key to return to the menu")
+        # Welcome and explain
+        print(f"Welcome to the install wizard of BscBackend!\n")
+
+        if args.username != "root":
+            bsc_util.alert(f"You are running this script as '{args.username}', not as database user 'root'")
+            bsc_util.alert(f"Creating the database and tables may fail.")
+
+        print(f"Testing database connection.. ")
+
+        # Setup connection
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.username,
+                               password=args.password,
+                               database="mqtt")
+        cursor = conn.cursor()
+        cursor.execute(query="SELECT TABLE_NAME FROM information_schema.TABLES "
+                             "WHERE TABLE_SCHEMA LIKE %s "
+                             "AND TABLE_TYPE LIKE 'BASE TABLE' "
+                             "AND (TABLE_NAME = %s OR TABLE_NAME = %s)",
+                       args=(args.database, "mqtt_user", "mqtt_acl"))
+        counter = cursor.fetchall()
+
+        if len(counter) > 0:
+            bsc_util.alert(f"Database already exists!")
+            if click.prompt(f"{bcolors.WARNING} Do you wish to wipe all data and install again? (yes/no)"
+                            f"{bcolors.HEADER}") != "yes":
                 return
         else:
-            print(f"Aborting..")
+            print(f"Connection established.")
+
+        print(f"Setting up database.. ")
+        # Clean up
+        cursor.execute(query="DROP TABLE IF EXISTS `mqtt_user`")
+        cursor.execute(query="DROP TABLE IF EXISTS `mqtt_acl`")
+
+        # Create Database
+        cursor.execute(query="CREATE DATABASE IF NOT EXISTS %s",
+                       args=args.database)
+
+        # Create table: mqtt_user (Authentication)
+        cursor.execute(query="CREATE TABLE `mqtt_user` ("
+                             "`id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT, "
+                             "`username` varchar(100) DEFAULT NULL, "
+                             "`password_hash` varchar(100) DEFAULT NULL, "
+                             "`salt` varchar(35) DEFAULT NULL, "
+                             "`is_superuser` tinyint(1) DEFAULT 0, "
+                             "`ipaddress` varchar(60) DEFAULT NULL "
+                             "PRIMARY KEY (`id`), "
+                             "UNIQUE KEY `mqtt_username` (`username`)"
+                             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;)")
+
+        # Create table: mqtt_acl (Authorization)
+        cursor.execute(query="CREATE TABLE `mqtt_acl` ( "
+                             "`id` int(11) unsigned NOT NULL AUTO_INCREMENT, "
+                             "`ipaddress` VARCHAR(60) NOT NULL DEFAULT '', "
+                             "`username` VARCHAR(255) NOT NULL DEFAULT '', "
+                             "`action` ENUM('publish', 'subscribe', 'all') NOT NULL, "
+                             "`permission` ENUM('allow', 'deny') NOT NULL, "
+                             "`topic` VARCHAR(255) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (`id`) "
+                             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;)")
+        conn.commit()
+        print("Database and tables created!")
+
+        print(f"{bcolors.UNDERLINE}Create EMQX user:{bcolors.ENDC}{bcolors.HEADER}")
+        print(f"This account will be used by the EMQX-Dashboard/Mqtt-Broker to authenticate client connections")
+        print(f"and authorize subscriptions and publishes from broker and clients!\n")
+        emqx_username = ""
+        while emqx_username == "":
+            tmp = click.prompt("Username", type=str)
+            if 3 < len(tmp) >= 15 and re.match(r"^[A-Za-z0-9_-]*$", tmp):
+                emqx_username = tmp
+            else:
+                bsc_util.alert("Username must be between 3 and 15 characters long and not contain special chacaters")
+
+        emqx_password = ""
+        while emqx_password == "":
+            tmp = click.prompt("Password", type=str, confirmation_prompt=True, hide_input=True)
+            if bsc_util.check_password_strength(tmp, echo=True):
+                emqx_password = tmp
+
+
+
+
+
+
+
+    except Exception as ex:
+        bsc_util.alert(f"ex")
+        return
+
+
+def list_users():
+    try:
+
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.username,
+                               password=args.password,
+                               database="mqtt")
+        cursor = conn.cursor()
+        cursor.execute("SELECT `id`, `username`, `ipaddress` FROM mqtt_user WHERE `is_superuser` = %s", False)
+        data = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        if len(data) == 0:
+            bsc_util.alert("There are no users yet.")
             return
 
-    args.database = db_location
+        print(f"There are {len(data)} users:\n")
+        for x in data:
+            print(f"id: {x[0]}\tusername: {x[1]}\tIp Address: {x[2]}")
 
-    # Request password protection:
-    db_pass = args.password
-    print(f"{bcolors.WARNING}Please be advised: The password you set here {bcolors.BOLD} can't be restored!{bcolors.ENDC}")
-    while not bsc_util.check_password(db_pass):
-        print(f"Secure passwords consist of at least 12 characters")
-        print(f"It must include lower and uppercase characters, numbers and symbols")
-        db_pass = getpass(">> ")
-
-    args.database = db_location
-    args.password = db_pass
-    try:
-        connection = sqlitewrapper.SqliteCipher(dataBasePath=db_location, checkSameThread=False, password=db_pass)
-        col_list = [
-            ["id", "TEXT"],
-            ["username", "TEXT"],
-            ["password", "TEXT"],
-            ["salt", "TEXT"],
-            ["banned", "INT"]
-        ]
-        connection.createTable("users", colList=col_list, makeSecure=True, commit=True)
-        connection.sqlObj.close()
-        print(f"Database has been created!")
-        print(f"{bcolors.WARNING}Please keep the password secure. It cannot be restored!{bcolors.HEADER}")
-        print("")
-        input("Press any key to return to the menu")
-
-    except IOError:
-        print(f"Could not connect to database at {db_location}")
-
-
-def print_users(debug: bool = False):
-    try:
-        if args.password is None or not bsc_util.check_password(args.password):
-            args.password = getpass("Please enter the password: ")
-
-        connection = sqlitewrapper.SqliteCipher(dataBasePath=args.database, checkSameThread=False,
-                                                password=args.password)
-        col, data = connection.getDataFromTable("users", raiseConversionError=True, omitID=False)
-        if debug:
-            for entry in data:
-                print(entry)
-        else:
-            for entry in data:
-                b = "BANNED" if entry[5] == 0 else ""
-                print(f"User: {entry[2]}\t{b}")
-        connection.sqlObj.close()
-
-    except RuntimeError as r:
-        print(f"Could not connect to the database: [{args.password}] {r}")
-    except ValueError as v:
-        print(f"Conversion error: {v}")
+    except MySQLdb.Error as ex:
+        bsc_util.alert(f"Could not connect to the database: {ex}", color_message=bcolors.FAIL)
 
 
 def add_user():
     username = ""
 
     try:
-        if args.password is None or not bsc_util.check_password(args.password):
-            args.password = getpass("Please enter the password: ")
-
-        connection = sqlitewrapper.SqliteCipher(dataBasePath=args.database, checkSameThread=False,
-                                                password=args.password)
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.username,
+                               password=args.password,
+                               database="mqtt")
+        cursor = conn.cursor()
+        cursor.execute("SELECT `username` FROM mqtt_user")
+        existing_users = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
         while username == "":
             temp = click.prompt("Please enter a username: ")
-            col, data = connection.getDataFromTable("users", raiseConversionError=False, omitID=True)
             is_free = True
-            for entry in data:
-                if entry[1].lower() == temp.lower():
-                    print(f"Username '{temp}' is already taken.")
+
+            for user in existing_users:
+                if user[0].lower() == temp.lower():
+                    bsc_util.alert(f"Username {temp} is already taken!")
                     is_free = False
 
-            # Only allow letters, numbers, minus and underscore
-            if is_free and re.match("^[A-Za-z0-9_-]*$", temp) and len(temp) > 3:
+            if is_free is True and re.match("^[A-Za-z0-9_-]*$", temp) and len(temp) > 3:
                 username = temp
-            else:
-                print(f"Username contains illegal characters or is too short.")
+            elif is_free:
+                bsc_util.alert("Username contains illegal characters or is too short.")
 
         while True:
             password = click.prompt("Please enter a password: ", confirmation_prompt=True, hide_input=True)
-            if bsc_util.check_password(password):
+            if bsc_util.check_password_strength(password, echo=True):
                 break
-            else:
-                print(f"Secure passwords consist of at least 12 characters")
-                print(f"It must include lower and uppercase characters, numbers and symbols")
 
-        salt = os.urandom(32)
-        key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100_000)
+        ip = click.prompt("Please enter IPv4 address: ", type=ipaddress.IPv4Address)
+        ip = str(ip)
 
-        connection.insertIntoTable("users", insertList=[
-            str(uuid.uuid4()),
-            username,
-            key,
-            salt,
-            1
-        ], commit=True)
-        connection.sqlObj.close()
-        print(f"User [{username}] has been added!")
+        key, salt = bsc_util.calc_password_hash(password)
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.username,
+                               password=args.password,
+                               database="mqtt")
+        cursor = conn.cursor()
+        cursor.execute(query="INSERT INTO mqtt_user "
+                             "(`username`, `password_hash`, `salt`, `ipaddress`) "
+                             "VALUES(%s, %s, %s, %s)",
+                       args=(username, key, salt, ip))
 
-    except RuntimeError:
-        print(f"Could not connect to the database using password: {args.password}")
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(str(ip), username, 'publish', 'allow', 'req/messages'))
+
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(str(ip), username, 'publish', 'allow', 'req/settings'))
+
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(str(ip), username, 'subscribe', 'allow', 'res/messages'))
+
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(str(ip), username, 'subscribe', 'allow', 'res/settings'))
+
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(str(ip), username, 'subscribe', 'allow', 'messages/add'))
+
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(str(ip), username, 'subscribe', 'allow', 'messages/remove'))
+
+        conn.commit()
+        conn.close()
+        cursor.close()
+        bsc_util.alert(f"User '{username}' has been added as client and may connect from '{str(ip)}'")
+
+    except RuntimeError as r:
+        print(f"Could not connect to the database: {r}")
     except ValueError as v:
         print(f"Conversion error: {v}")
 
 
-def edit_user(mode: int = 0):
-    if args.password is None or not bsc_util.check_password(args.password):
-        args.password = getpass("Please enter the password: ")
+def edit_user():
+    try:
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.username,
+                               password=args.password,
+                               database="mqtt")
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM mqtt_user WHERE `is_superuser` = FALSE")
+        existing_users = cursor.fetchall()
+        for user in existing_users:
+            print(f"[{user[0]}]\t{user[1]}")
 
-    connection = sqlitewrapper.SqliteCipher(dataBasePath=args.database, checkSameThread=False,
-                                            password=args.password)
-
-    col, data = connection.getDataFromTable("users", raiseConversionError=False, omitID=False)
-    for user in data:
-        print(f"[{user[0]}] {user[2]}")
-
-    selection = click.prompt("Please select the user", type=int)
-    if 0 < selection >= len(data):
-        print("Invalid selection")
-        return
-
-    if mode == 0:
-
-        # Update password
+        username = ""
         while True:
-            password = click.prompt("Please enter a new password: ", confirmation_prompt=True, hide_input=True)
-            if bsc_util.check_password(password):
+            selection = click.prompt("\nPlease select the user", type=int)
+            valid = False
+            for user in existing_users:
+                if user[0] == selection:
+                    username = user[1]
+                    valid = True
+            if valid:
                 break
             else:
-                print(f"Secure passwords consist of at least 12 characters")
-                print(f"It must include lower and uppercase characters, numbers and symbols")
+                bsc_util.alert(f"'{selection}' is not a valid selection.")
 
-        salt = os.urandom(32)
-        key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100_000)
-        connection.updateInTable("users", selection, "password", key, commit=True, raiseError=True)
-        connection.updateInTable("users", selection, "salt", salt, commit=True, raiseError=True)
-        print(f"The user has been updated!")
+        def print_options():
+            print(f"\n\nOptions are:")
+            print(f"[1] Change IP")
+            print(f"[2] Change Password")
+            print(f"[3] Delete")
+            print("")
+            print(f"[0] Back\n")
 
-    elif mode == 1:
-        # Ban a user
-        connection.updateInTable("users", selection, "banned", 0, commit=True, raiseError=True)
-        print(f"The user has been banned!")
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.username,
+                               password=args.password,
+                               database="mqtt")
+        cursor = conn.cursor()
 
-    connection.sqlObj.close()
+        print_options()
+        bsc_util.alert(f"Updating user '{username}':\n")
+        while True:
+            choice = click.prompt("Select option", type=int)
+            if 0 <= choice < 4:
+                break
+            else:
+                bsc_util.alert(f"'{choice}' is not a valid option.")
+
+        match choice:
+            case 1:
+                value = click.prompt("New IP", type=ipaddress.IPv4Address)
+                cursor.execute(query="UPDATE mqtt_user SET `ipaddress` = %s WHERE `id` = %s",
+                               args=(str(value), str(selection)))
+                cursor.execute(query="UPDATE mqtt_acl SET `ipaddress` = %s WHERE `username` = %s",
+                               args=(str(value), username))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                bsc_util.alert(f"Changed IP of user {username} to {value}")
+
+            case 2:
+                while True:
+                    tmp = click.prompt("New Password", hide_input=True, confirmation_prompt=True)
+                    if bsc_util.check_password_strength(tmp, echo=True):
+                        password = tmp
+                        break
+
+                key, salt = bsc_util.calc_password_hash(password)
+                cursor.execute(query="UPDATE mqtt_user SET `password_hash` = %s, `salt` = %s WHERE `id` = %s",
+                               args=(key, salt, str(selection)))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                bsc_util.alert(f"Changed password of user '{username}'")
+
+            case 3:
+                print(f"{bcolors.WARNING}Warning: This action can not be undone!")
+                if click.prompt(
+                        f"Are you sure you wish to delete user '{username}'? (yes/no){bcolors.HEADER}") == "yes":
+                    cursor.execute(query="DELETE FROM mqtt_user WHERE `id` = %s",
+                                   args=(str(selection)))
+                    cursor.execute(query="DELETE FROM mqtt_acl WHERE `username` = %s",
+                                   args=username)
+                    conn.commit()
+                cursor.close()
+                conn.close()
+                bsc_util.alert(f"Deleted user {username}!")
+            case _:
+                return
+    except MySQLdb.Error as sqlError:
+        print(f"Error while interacting with the database: {sqlError}")
 
 
 def setup():
@@ -335,37 +505,32 @@ def setup():
     print(f"--------------------------------------")
 
     def print_options():
-        # click.clear()
-        print(f"Options are:")
+        print(f"\nOptions are:")
         print(f"[1] Install")
-        print(f"[2] List all users")
-        print(f"[3] Add new user")
-        print(f"[4] Change user's password")
-        print(f"[5] Ban user")
+        print(f"[2] Start Server")
+        print(f"[3] List Users")
+        print(f"[4] Add User")
+        print(f"[5] Edit User")
         print("")
-        print(f"Press anything else to exit")
+        print(f"[0] Exit\n")
 
-    try:
-        while True:
-            print_options()
-            choice = int(input("\nChoose option: "))
-            match choice:
-                case 1:
-                    install()
-                case 2:
-                    print_users()
-                case 3:
-                    add_user()
-                case 4:
-                    edit_user(0)
-                case 5:
-                    edit_user(1)
-                case _:
-                    print("exit")
-                    break
-    except ValueError:
-        print(f"Exiting..")
-        return
+    while True:
+        print_options()
+        choice = click.prompt("Select option", type=int)
+        match choice:
+            case 1:
+                install()
+            case 2:
+                asyncio.run(main())
+            case 3:
+                list_users()
+            case 4:
+                add_user()
+            case 5:
+                edit_user()
+            case 0:
+                print("exit")
+                break
 
 
 async def main():
@@ -375,15 +540,16 @@ async def main():
 
 
 if __name__ == '__main__':
-
+    click.clear()
     if args.password:
-        print(f"{bcolors.FAIL} Startup with password! This is okay for playing around, but don't automate it like that.{bcolors.HEADER}")
+        bsc_util.alert("Startup with password! This is okay for playing around, but don't automate it like that.",
+                       color_message=bcolors.FAIL)
 
-    print(f"{bcolors.HEADER}")
     if args.run:
         print("Starting Server..")
         asyncio.run(main())
     elif args.setup:
+        print(f"{bcolors.HEADER}")
         setup()
     else:
         print("You need to specify --run if you wish to start the server.")
