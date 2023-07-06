@@ -13,7 +13,7 @@ def check_password_strength(password, echo: bool = True):
                 or (re.search(r"\d", password) is None)
                 or (re.search(r"[A-Z]", password) is None)
                 or (re.search(r"[a-z]", password) is None)
-                or (re.search(r"[ !#$%&'()*+,-./[\\\]^_`{|}~"+r'"]', password) is None))
+                or (re.search(r"[ !#$%&'*+,-./[\\\]^_`{|}~"+r'"]', password) is None))
     if echo and value:
         print(f"{bcolors.WARNING}Secure passwords consist of at least 12 characters")
         print(f"It must include lower and uppercase characters, numbers and symbols{bcolors.HEADER}")
@@ -35,7 +35,7 @@ def alert(message: str,
 def request_username():
     while True:
         tmp = click.prompt("Username", type=str)
-        if 3 < len(tmp) >= 15 and re.match(r"^[A-Za-z0-9_-]*$", tmp):
+        if 3 < len(tmp) <= 15 and re.match("^[A-Za-z0-9]*$", tmp):
             return tmp
         else:
             alert("Username must be between 3 and 15 characters long and not contain special characters")

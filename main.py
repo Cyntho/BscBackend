@@ -47,13 +47,14 @@ parser = argparse.ArgumentParser(
 # MQTT
 parser.add_argument(
     "--mqtt-host",
-    default="10.66.66.1",
+    default="",
     action="store",
     help="Host of mqtt broker"
 )
 parser.add_argument(
     "--mqtt-port",
-    default=8883,
+    type=int,
+    default=-1,
     action="store",
     help="Specify the MQTT broker's Port"
 )
@@ -61,37 +62,51 @@ parser.add_argument(
 # MySQL
 parser.add_argument(
     "--mysql-host",
-    default="10.66.66.1",
+    default="",
     action='store',
     help="Host of mysql auth. server"
 )
 parser.add_argument(
     "--mysql-port",
-    default=3306,
+    default=-1,
     action='store',
     type=int,
     help="MySQL server port"
 )
 parser.add_argument(
     "--database",
-    default="mqtt",
+    default="",
     action="store",
     type=str,
     help="MySQL database"
 )
 parser.add_argument(
-    "--username",
+    "--mysql-user",
     action='store',
     type=str,
-    default="admin",
+    default="",
     help="MySQL username"
 )
 parser.add_argument(
-    "--password",
+    "--mysql-password",
     action='store',
     type=str,
-    default="public",
+    default="",
     help="MySQL password"
+)
+parser.add_argument(
+    "--mqtt-user",
+    action='store',
+    type=str,
+    default="",
+    help="MQTT username (broker account)"
+)
+parser.add_argument(
+    "--mqtt-password",
+    action='store',
+    type=str,
+    default="",
+    help="MQTT password (broker account)"
 )
 
 # Runtime
@@ -119,87 +134,97 @@ async def get_settings():
 
 
 async def listen():
-    global args
-    async with aiomqtt.Client(hostname=args.mqtt_host,
-                              client_id="broker_listening",
-                              port=args.mqtt_port,
-                              username="broker",
-                              password="32tz7u8mM",
-                              clean_start=paho.mqtt.client.MQTT_CLEAN_START_FIRST_ONLY,
-                              tls_params=tls_params) as client:
-        async with client.messages() as messages:
-            await client.subscribe("req/settings", 1)
-            await client.subscribe("req/messages", 1)
+    try:
+        print("Attempting to listen")
+        async with aiomqtt.Client(hostname=args.mqtt_host,
+                                  client_id="broker_listening",
+                                  port=args.mqtt_port,
+                                  username=args.mqtt_user,
+                                  password=args.mqtt_password,
+                                  clean_start=paho.mqtt.client.MQTT_CLEAN_START_FIRST_ONLY,
+                                  tls_params=tls_params) as client:
 
-            async for message in messages:
-                if message.topic.matches("req/messages"):
-                    # give the client a bit to build its ui
-                    await asyncio.sleep(1)
-                    print(f"Responding to req/message with:")
-                    async with lock:
-                        for entry in message_list:
-                            e = str(entry.to_json())
-                            print(f"\t{e}")
-                            await client.publish("res/messages", qos=1, payload=e)
+            async with client.messages() as messages:
+                await client.subscribe("req/settings", 1)
+                await client.subscribe("req/messages", 1)
 
-                if message.topic.matches("req/settings"):
-                    print(f"Caught request for settings.")
-                    cfg = await get_settings()
-                    await client.publish("res/settings", str(cfg), 1, False)
-                    print(f"Responded with [{cfg}]")
+                async for message in messages:
+                    if message.topic.matches("req/messages"):
+                        # give the client a bit to build its ui
+                        await asyncio.sleep(1)
+                        print(f"Responding to req/message with:")
+                        async with lock:
+                            for entry in message_list:
+                                e = str(entry.to_json())
+                                print(f"\t{e}")
+                                await client.publish("res/messages", qos=1, payload=e)
+
+                    if message.topic.matches("req/settings"):
+                        print(f"Caught request for settings.")
+                        cfg = await get_settings()
+                        await client.publish("res/settings", str(cfg), 1, False)
+                        print(f"Responded with [{cfg}]")
+    except Exception:
+        bsc_util.alert(f"Unable to connect to mqtt server")
+        pass
 
 
 async def publish_generator():
-    async with aiomqtt.Client(hostname="10.66.66.1",
-                              client_id="broker_generator",
-                              port=8883,
-                              username="broker",
-                              password="32tz7u8mM",
-                              clean_start=paho.mqtt.client.MQTT_CLEAN_START_FIRST_ONLY,
-                              tls_params=tls_params) as client:
-        # Initialize config once
-        cfg = Settings("settings.json")
+    try:
+        async with aiomqtt.Client(hostname=args.mqtt_host,
+                                  client_id="broker_generator",
+                                  port=args.mqtt_port,
+                                  username=args.mqtt_user,
+                                  password=args.mqtt_password,
+                                  clean_start=paho.mqtt.client.MQTT_CLEAN_START_FIRST_ONLY,
+                                  tls_params=tls_params) as client:
+            # Initialize config once
+            cfg = Settings("settings.json")
 
-        # Generate a few messages to see something on the client
-        for i in range(0, random.randint(5, 7)):
-            msg = MessageWrapper.randomize(cfg)
-            print(f"Initial generation [{i}]: {msg.to_string()}")
-            await client.publish("messages/add", qos=1, payload=msg.to_json())
-            async with lock:
-                message_list.append(msg)
-
-        # Loop
-        while True:
-            # Generate random number. If list is empty or picked number large enough, generate message
-            if random.randint(0, 100) > 50 or len(message_list) == 0:
-                print("Publishing..")
+            # Generate a few messages to see something on the client
+            for i in range(0, random.randint(5, 7)):
                 msg = MessageWrapper.randomize(cfg)
-                print(f"Generated message with id [{msg.id}]")
-                # await client.publish("mqtt/test", qos=1, payload=b"Das ist ein Test")
+                print(f"Initial generation [{i}]: {msg.to_string()}")
                 await client.publish("messages/add", qos=1, payload=msg.to_json())
                 async with lock:
                     message_list.append(msg)
 
-            # Randomly pick a message and send delete to clients
-            else:
-                index = random.randint(0, len(message_list) - 1)
-                async with lock:
-                    msg = message_list[index]
-                    message_list.remove(msg)
-                    print(f"Removing message: {msg.id}. There are {len(message_list)} entries left.")
-                await client.publish("messages/remove", qos=1, payload=msg.to_json())
-            await asyncio.sleep(1)
+            # Loop
+            while True:
+                # Generate random number. If list is empty or picked number large enough, generate message
+                if random.randint(0, 100) > 50 or len(message_list) == 0:
+                    print("Publishing..")
+                    msg = MessageWrapper.randomize(cfg)
+                    print(f"Generated message with id [{msg.id}]")
+                    # await client.publish("mqtt/test", qos=1, payload=b"Das ist ein Test")
+                    await client.publish("messages/add", qos=1, payload=msg.to_json())
+                    async with lock:
+                        message_list.append(msg)
+
+                # Randomly pick a message and send delete to clients
+                else:
+                    index = random.randint(0, len(message_list) - 1)
+                    async with lock:
+                        msg = message_list[index]
+                        message_list.remove(msg)
+                        print(f"Removing message: {msg.id}. There are {len(message_list)} entries left.")
+                    await client.publish("messages/remove", qos=1, payload=msg.to_json())
+                await asyncio.sleep(1)
+    except:
+        bsc_util.alert("")
 
 
 def install():
     conn: pymysql.connections.Connection
     try:
-
         # Welcome and explain
         print(f"Welcome to the install wizard of BscBackend!\n")
 
-        if args.username != "root":
-            bsc_util.alert(f"You are running this script --username '{args.username}', not as database user 'root'")
+        require_db()
+
+        if args.mysql_user != "root":
+            bsc_util.alert(f"You are running this script with --username '{args.mysql_user}', "
+                           f"not as database user 'root'")
             bsc_util.alert(f"Creating the database and tables may fail.")
 
         print(f"Testing database connection.. ")
@@ -207,33 +232,59 @@ def install():
         # Setup connection
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
-                               user=args.username,
-                               password=args.password,
-                               database=args.database)
+                               user=args.mysql_user,
+                               password=args.mysql_password)
         cursor = conn.cursor()
-        cursor.execute(query="SELECT TABLE_NAME FROM information_schema.TABLES "
-                             "WHERE TABLE_SCHEMA LIKE %s "
-                             "AND TABLE_TYPE LIKE 'BASE TABLE' "
-                             "AND (TABLE_NAME = %s OR TABLE_NAME = %s)",
-                       args=(args.database, "mqtt_user", "mqtt_acl"))
-        counter = cursor.fetchall()
+        print(f"Connected with db: {args.database}")
 
-        if len(counter) > 0:
-            bsc_util.alert(f"Database already exists!")
-            if click.prompt(f"{bcolors.WARNING} Do you wish to wipe all data and install again? (yes/no)"
-                            f"{bcolors.HEADER}") != "yes":
-                return
+        # Check if the database already exists
+        cursor.execute(query="SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "
+                             "WHERE SCHEMA_NAME LIKE %s",
+                       args=args.database)
+
+        db_counter = cursor.fetchall()
+        db_is_new = False
+        if len(db_counter) > 0:
+            bsc_util.alert(f"The database '{args.database}' already exists!")
+            if click.prompt(f"{bcolors.WARNING} Do you wish to drop the database? (yes/no)"
+                            f"{bcolors.HEADER}") == "yes":
+                cursor.execute(query=f"DROP DATABASE {args.database}")
+                conn.commit()
+                print(f"Successfully dropped database {args.database}")
+                db_is_new = True
+
+        # Check if needed tables exist already
+        if not db_is_new:
+            cursor.execute(query="SELECT TABLE_NAME FROM information_schema.TABLES "
+                                 "WHERE TABLE_SCHEMA LIKE %s "
+                                 "AND TABLE_TYPE LIKE 'BASE TABLE' "
+                                 "AND (TABLE_NAME = %s OR TABLE_NAME = %s)",
+                           args=(args.database, "mqtt_user", "mqtt_acl"))
+            counter = cursor.fetchall()
+
+            if len(counter) > 0:
+                bsc_util.alert(f"Database tables already exist!")
+                if click.prompt(f"{bcolors.WARNING} Do you wish to wipe all data and install again? (yes/no)"
+                                f"{bcolors.HEADER}") != "yes":
+                    bsc_util.alert("Aborting..")
+                    cursor.close()
+                    conn.close()
+                    return
+                else:
+                    cursor.execute(query=f"DROP DATABASE {args.database}")
+                    conn.commit()
+            else:
+                print(f"Connection established.")
         else:
             print(f"Connection established.")
 
-        print(f"Setting up database.. ")
-        # Clean up
-        cursor.execute(query="DROP TABLE IF EXISTS `mqtt_user`")
-        cursor.execute(query="DROP TABLE IF EXISTS `mqtt_acl`")
+        print(f"Setting up database tables.. ")
 
         # Create Database
-        cursor.execute(query="CREATE DATABASE IF NOT EXISTS %s",
-                       args=args.database)
+        cursor.execute(query=f"CREATE DATABASE IF NOT EXISTS {args.database}")
+        conn.commit()
+
+        conn.select_db(args.database)
 
         # Create table: mqtt_user (Authentication)
         cursor.execute(query="CREATE TABLE `mqtt_user` ("
@@ -242,10 +293,11 @@ def install():
                              "`password_hash` varchar(100) DEFAULT NULL, "
                              "`salt` varchar(35) DEFAULT NULL, "
                              "`is_superuser` tinyint(1) DEFAULT 0, "
-                             "`ipaddress` varchar(60) DEFAULT NULL "
+                             "`is_broker` tinyint(1) DEFAULT 0, "
+                             "`ipaddress` varchar(60) DEFAULT NULL, "
                              "PRIMARY KEY (`id`), "
                              "UNIQUE KEY `mqtt_username` (`username`)"
-                             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;)")
+                             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;")
 
         # Create table: mqtt_acl (Authorization)
         cursor.execute(query="CREATE TABLE `mqtt_acl` ( "
@@ -256,10 +308,10 @@ def install():
                              "`permission` ENUM('allow', 'deny') NOT NULL, "
                              "`topic` VARCHAR(255) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (`id`) "
-                             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;)")
+                             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;")
         conn.commit()
         print("Database and tables created!")
-
+        print()
         print(f"{bcolors.UNDERLINE}Create EMQX user:{bcolors.ENDC}{bcolors.HEADER}")
         print(f"This account will be used by the EMQX-Dashboard/Mqtt-Broker to authenticate client connections")
         print(f"and authorize subscriptions and publishes from broker and clients!\n")
@@ -288,9 +340,9 @@ def install():
 
         # Create user account
         cursor.execute(query="INSERT INTO `mqtt_user` "
-                             "(`username`, `pasword_hash`, `salt`, `ipaddress`) "
-                             "VALUES (%s, %s, %s, %s)",
-                       args=(backend_username, backend_key, backend_salt, backend_ip))
+                             "(`username`, `password_hash`, `salt`, `ipaddress`, `is_broker`) "
+                             "VALUES (%s, %s, %s, %s, %s)",
+                       args=(backend_username, backend_key, backend_salt, backend_ip, 1))
 
         # Granting permissions:
 
@@ -332,27 +384,60 @@ def install():
 
         conn.commit()
 
+        # Give feedback
+        print()
+        print("Database, tables and users have been setup successfully!")
+        print("Please go to your EMQX-Dashboard and configure the authentication/authorization of clients:")
+        print()
+        print(f"{bcolors.UNDERLINE}Authentication:{bcolors.ENDC}{bcolors.HEADER}")
+        print(f"Type:\t \tPassword-based")
+        print(f"Backend:\t MySQL")
+        print()
+        print(f"Server:\t \t \t127.0.0.1:{args.mysql_port}")
+        print(f"Database:\t{args.database}")
+        print(f"Username:\t{emqx_username}")
+        print(f"Password:\t <your_password>")
+        print(f"SQL:\t\t{bcolors.UNDERLINE}leave as default{bcolors.ENDC}{bcolors.HEADER}")
+        print("\n")
+        print(f"{bcolors.UNDERLINE}Authorization:{bcolors.ENDC}{bcolors.HEADER}")
+        print(f"Database:\t{args.database}")
+        print(f"Username:\t{emqx_username}")
+        print(f"Password:\t<your_password>")
+        print("SQL:\t \tSELECT action, permission, topic FROM mqtt_acl where username = ${username} "
+              "and ipaddress = ${peerhost}")
+        print()
     except Exception as ex:
         bsc_util.alert(f"{ex}")
+        args.database = ""
+        args.mysql_user = ""
+        args.mysql_password = ""
+        args.mysql_host = ""
+        args.mysql_port = -1
         return
 
 
-def list_users():
+async def list_users():
     try:
+        await require_db()
+        await require_mqtt()
 
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
-                               user=args.username,
-                               password=args.password,
-                               database="mqtt")
+                               user=args.mysql_user,
+                               password=args.mysql_password,
+                               database=args.database)
         cursor = conn.cursor()
-        cursor.execute("SELECT `id`, `username`, `ipaddress` FROM mqtt_user WHERE `is_superuser` = %s", False)
+        cursor.execute(query="SELECT `id`, `username`, `ipaddress` "
+                             "FROM mqtt_user "
+                             "WHERE `is_superuser` = %s "
+                             "AND `is_broker` = %s",
+                       args=(False, False))
         data = cursor.fetchall()
         cursor.close()
         conn.close()
 
         if len(data) == 0:
-            bsc_util.alert("There are no users yet.")
+            bsc_util.alert("There are no client yet.")
             return
 
         print(f"There are {len(data)} users:\n")
@@ -363,15 +448,19 @@ def list_users():
         bsc_util.alert(f"Could not connect to the database: {ex}", color_message=bcolors.FAIL)
 
 
-def add_user():
+async def add_user():
+
+    await require_db()
+    await require_mqtt()
+
     username = ""
 
     try:
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
-                               user=args.username,
-                               password=args.password,
-                               database="mqtt")
+                               user=args.mysql_user,
+                               password=args.mysql_password,
+                               database=args.database)
         cursor = conn.cursor()
         cursor.execute("SELECT `username` FROM mqtt_user")
         existing_users = cursor.fetchall()
@@ -400,9 +489,9 @@ def add_user():
         key, salt = bsc_util.calc_password_hash(password)
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
-                               user=args.username,
-                               password=args.password,
-                               database="mqtt")
+                               user=args.mysql_user,
+                               password=args.mysql_password,
+                               database=args.database)
         cursor = conn.cursor()
         cursor.execute(query="INSERT INTO mqtt_user "
                              "(`username`, `password_hash`, `salt`, `ipaddress`) "
@@ -450,26 +539,32 @@ def add_user():
         print(f"Conversion error: {v}")
 
 
-def edit_user():
+async def edit_user():
+    await require_db()
+    await require_mqtt()
+
     try:
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
-                               user=args.username,
-                               password=args.password,
-                               database="mqtt")
+                               user=args.mysql_user,
+                               password=args.mysql_password,
+                               database=args.database)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM mqtt_user WHERE `is_superuser` = FALSE")
+        cursor.execute("SELECT `id`, `username`, `ipaddress` "
+                       "FROM mqtt_user WHERE `is_superuser` = FALSE AND `is_broker` = FALSE")
         existing_users = cursor.fetchall()
         for user in existing_users:
             print(f"[{user[0]}]\t{user[1]}")
 
         username = ""
+        user_ip = ""
         while True:
             selection = click.prompt("\nPlease select the user", type=int)
             valid = False
             for user in existing_users:
                 if user[0] == selection:
                     username = user[1]
+                    user_ip = user[2]
                     valid = True
             if valid:
                 break
@@ -486,13 +581,13 @@ def edit_user():
 
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
-                               user=args.username,
-                               password=args.password,
-                               database="mqtt")
+                               user=args.mysql_user,
+                               password=args.mysql_password,
+                               database=args.database)
         cursor = conn.cursor()
 
-        print_options()
         bsc_util.alert(f"Updating user '{username}':\n")
+        print_options()
         while True:
             choice = click.prompt("Select option", type=int)
             if 0 <= choice < 4:
@@ -502,7 +597,7 @@ def edit_user():
 
         match choice:
             case 1:
-                value = click.prompt("New IP", type=ipaddress.IPv4Address)
+                value = click.prompt("New IP", type=ipaddress.IPv4Address, default=user_ip)
                 cursor.execute(query="UPDATE mqtt_user SET `ipaddress` = %s WHERE `id` = %s",
                                args=(str(value), str(selection)))
                 cursor.execute(query="UPDATE mqtt_acl SET `ipaddress` = %s WHERE `username` = %s",
@@ -541,18 +636,14 @@ def edit_user():
         print(f"Error while interacting with the database: {sqlError}")
 
 
-def setup():
-    print(f"--------------------------------------")
-    print(f"Welcome to the setup of the BscBackend")
-    print(f"--------------------------------------")
-
+async def setup():
     def print_options():
         print(f"\nOptions are:")
         print(f"[1] Install")
         print(f"[2] Start Server")
-        print(f"[3] List Users")
-        print(f"[4] Add User")
-        print(f"[5] Edit User")
+        print(f"[3] List clients")
+        print(f"[4] Add client")
+        print(f"[5] Edit client")
         print("")
         print(f"[0] Exit\n")
 
@@ -563,19 +654,95 @@ def setup():
             case 1:
                 install()
             case 2:
-                asyncio.run(main())
+                await main()
             case 3:
-                list_users()
+                await list_users()
             case 4:
-                add_user()
+                await add_user()
             case 5:
-                edit_user()
+                await edit_user()
+            case 6:
+                bsc_util.request_username()
             case 0:
                 print("exit")
                 break
 
 
+async def require_db():
+    # MySQL connection:
+    if args.mysql_host is None or args.mysql_host == "":
+        args.mysql_host = str(click.prompt("Address of the MySQL instance",
+                                           type=ipaddress.IPv4Address,
+                                           default="10.66.66.1"))
+    if args.mysql_port is None or args.mysql_port == -1:
+        args.mysql_port = click.prompt("Port of the MySQL instance", type=int, default=3306)
+    if args.database is None or args.database == "":
+        args.database = click.prompt("Specify database name", type=str, default="mqtt")
+    if args.mysql_user is None or args.mysql_user == "":
+        args.mysql_user = click.prompt("MySQL username", type=str)
+    if args.mysql_password is None or args.mysql_password == "":
+        args.mysql_password = click.prompt("MySQL password", type=str, hide_input=True)
+
+    if not await test_db_connection():
+        bsc_util.alert("Unable to connect to MySQL server.", color_message=bcolors.FAIL)
+        exit(1)
+
+
+async def require_mqtt():
+    # MQTT connection:
+    if args.mqtt_host is None or args.mqtt_host == "":
+        args.mqtt_host = str(click.prompt("Mqtt host", type=ipaddress.IPv4Address))
+    if args.mqtt_port is None or args.mqtt_port == -1:
+        args.mqtt_port = click.prompt("Mqtt port", type=int)
+    if args.mqtt_user is None or args.mqtt_user == "":
+        args.mqtt_user = click.prompt("Mqtt username (broker)", type=str)
+    if args.mqtt_password is None or args.mqtt_password == "":
+        args.mqtt_password = click.prompt("Mqtt password (broker)", type=str, hide_input=True)
+
+    if not await test_mqtt_connection():
+        bsc_util.alert("Unable to connect to MQTT server.", color_message=bcolors.FAIL)
+        exit(1)
+
+
+async def test_db_connection():
+    try:
+        conn = pymysql.connect(host=args.mysql_host,
+                               port=args.mysql_port,
+                               user=args.mysql_user,
+                               password=args.mysql_password,
+                               database=args.database)
+        cursor = conn.cursor()
+        cursor.execute(query="SELECT * FROM `mqtt_user`")
+        cursor.close()
+        conn.close()
+    except Exception as ignored:
+        print(ignored)
+        return False
+    return True
+
+
+async def test_mqtt_connection():
+    try:
+        async with aiomqtt.Client(hostname=args.mqtt_host,
+                                  port=args.mqtt_port,
+                                  client_id="broker_testing",
+                                  username=args.mqtt_user,
+                                  password=args.mqtt_password,
+                                  clean_start=paho.mqtt.client.MQTT_CLEAN_START_FIRST_ONLY,
+                                  tls_params=tls_params) as client:
+            await client.connect()
+            await client.subscribe("req/settings", 1)
+            await client.unsubscribe("req/settings")
+            await client.disconnect()
+    except:
+        return False
+    return True
+
+
 async def main():
+    await require_mqtt()
+    await require_db()
+
     async with asyncio.TaskGroup() as tg:
         tg.create_task(listen())
         tg.create_task(publish_generator())
@@ -583,15 +750,17 @@ async def main():
 
 if __name__ == '__main__':
     click.clear()
-    if args.password:
-        bsc_util.alert("Startup with password! This is okay for playing around, but don't automate it like that.",
-                       color_message=bcolors.FAIL)
+    print(f"{bcolors.HEADER}")
 
-    if args.run:
+    print(f"--------------------------------------")
+    print(f"      Welcome to the BscBackend")
+    print(f"--------------------------------------\n")
+
+    if args.setup:
+        asyncio.run(setup())
+    elif args.run:
         print("Starting Server..")
         asyncio.run(main())
-    elif args.setup:
-        print(f"{bcolors.HEADER}")
-        setup()
     else:
         print("You need to specify --run if you wish to start the server.")
+        print("Call --help for more information")
