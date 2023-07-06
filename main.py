@@ -199,7 +199,7 @@ def install():
         print(f"Welcome to the install wizard of BscBackend!\n")
 
         if args.username != "root":
-            bsc_util.alert(f"You are running this script as '{args.username}', not as database user 'root'")
+            bsc_util.alert(f"You are running this script --username '{args.username}', not as database user 'root'")
             bsc_util.alert(f"Creating the database and tables may fail.")
 
         print(f"Testing database connection.. ")
@@ -209,7 +209,7 @@ def install():
                                port=args.mysql_port,
                                user=args.username,
                                password=args.password,
-                               database="mqtt")
+                               database=args.database)
         cursor = conn.cursor()
         cursor.execute(query="SELECT TABLE_NAME FROM information_schema.TABLES "
                              "WHERE TABLE_SCHEMA LIKE %s "
@@ -263,28 +263,77 @@ def install():
         print(f"{bcolors.UNDERLINE}Create EMQX user:{bcolors.ENDC}{bcolors.HEADER}")
         print(f"This account will be used by the EMQX-Dashboard/Mqtt-Broker to authenticate client connections")
         print(f"and authorize subscriptions and publishes from broker and clients!\n")
-        emqx_username = ""
-        while emqx_username == "":
-            tmp = click.prompt("Username", type=str)
-            if 3 < len(tmp) >= 15 and re.match(r"^[A-Za-z0-9_-]*$", tmp):
-                emqx_username = tmp
-            else:
-                bsc_util.alert("Username must be between 3 and 15 characters long and not contain special chacaters")
+        emqx_username = bsc_util.request_username()
+        emqx_password = bsc_util.request_password(True)
 
-        emqx_password = ""
-        while emqx_password == "":
-            tmp = click.prompt("Password", type=str, confirmation_prompt=True, hide_input=True)
-            if bsc_util.check_password_strength(tmp, echo=True):
-                emqx_password = tmp
+        emqx_key, emqx_salt = bsc_util.calc_password_hash(emqx_password)
+        cursor.execute(query="INSERT INTO mqtt_user "
+                             "(`username`, `password_hash`, `salt`, `is_superuser`) "
+                             "VALUES(%s, %s, %s, %s)",
+                       args=(emqx_username, emqx_key, emqx_salt, 1))
 
+        print(f"\n")
+        print(f"{bcolors.UNDERLINE}Create Backend user:{bcolors.ENDC}{bcolors.HEADER}")
+        print(f"This account will be used by this program to generate status messages,")
+        print(f"listen for client requests and respond accordingly. \n")
 
+        backend_username = bsc_util.request_username()
+        backend_password = bsc_util.request_password()
 
+        backend_key, backend_salt = bsc_util.calc_password_hash(backend_password)
 
+        print(f"Specify the static IPv4Address the backend will connect from:")
+        backend_ip = click.prompt("IP address", type=ipaddress.IPv4Address)
+        backend_ip = str(backend_ip)
 
+        # Create user account
+        cursor.execute(query="INSERT INTO `mqtt_user` "
+                             "(`username`, `pasword_hash`, `salt`, `ipaddress`) "
+                             "VALUES (%s, %s, %s, %s)",
+                       args=(backend_username, backend_key, backend_salt, backend_ip))
 
+        # Granting permissions:
+
+        # Listen for request for old messages
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(backend_ip, backend_username, 'subscribe', 'allow', 'req/messages'))
+
+        # Respond to request for old messages
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(backend_ip, backend_username, 'publish', 'allow', 'res/messages'))
+
+        # Listen for request for server settings
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(backend_ip, backend_username, 'subscribe', 'allow', 'req/messages'))
+
+        # Respond to request for server settings
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(backend_ip, backend_username, 'publish', 'allow', 'res/settings'))
+
+        # Publish messages
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(backend_ip, backend_username, 'publish', 'allow', 'messages/add'))
+
+        # Delete messages
+        cursor.execute(query="INSERT INTO mqtt_acl "
+                             "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(backend_ip, backend_username, 'publish', 'allow', 'messages/remove'))
+
+        conn.commit()
 
     except Exception as ex:
-        bsc_util.alert(f"ex")
+        bsc_util.alert(f"{ex}")
         return
 
 
@@ -343,10 +392,7 @@ def add_user():
             elif is_free:
                 bsc_util.alert("Username contains illegal characters or is too short.")
 
-        while True:
-            password = click.prompt("Please enter a password: ", confirmation_prompt=True, hide_input=True)
-            if bsc_util.check_password_strength(password, echo=True):
-                break
+        password = bsc_util.request_password()
 
         ip = click.prompt("Please enter IPv4 address: ", type=ipaddress.IPv4Address)
         ip = str(ip)
@@ -467,11 +513,7 @@ def edit_user():
                 bsc_util.alert(f"Changed IP of user {username} to {value}")
 
             case 2:
-                while True:
-                    tmp = click.prompt("New Password", hide_input=True, confirmation_prompt=True)
-                    if bsc_util.check_password_strength(tmp, echo=True):
-                        password = tmp
-                        break
+                password = bsc_util.request_password()
 
                 key, salt = bsc_util.calc_password_hash(password)
                 cursor.execute(query="UPDATE mqtt_user SET `password_hash` = %s, `salt` = %s WHERE `id` = %s",
