@@ -1,31 +1,19 @@
 #!/src/usr/python3
-import datetime
-import hashlib
-import io
 import ipaddress
-import os
 import random
 import re
 import ssl
-import time
-import uuid
 
 import MySQLdb
 import paho.mqtt.client
 
 import pymysql
-
-import sqlite3
 import click
-from getpass import getpass
-from pysqlitecipher import sqlitewrapper
 
 import bsc_util
-from LocationWrapper import LocationWrapper
 from MessageWrapper import MessageWrapper
 import MessageWrapper
 from bcolors import bcolors
-from mqtt5Service import Mqtt5Service
 from settings import Settings
 
 import asyncio
@@ -214,18 +202,19 @@ async def publish_generator():
         bsc_util.alert("")
 
 
-def install():
+async def install():
     conn: pymysql.connections.Connection
     try:
+        await require_db(pref_root=True)
+
         # Welcome and explain
         print(f"Welcome to the install wizard of BscBackend!\n")
 
-        require_db()
-
         if args.mysql_user != "root":
-            bsc_util.alert(f"You are running this script with --username '{args.mysql_user}', "
-                           f"not as database user 'root'")
-            bsc_util.alert(f"Creating the database and tables may fail.")
+            bsc_util.alert(f"You are running this installation as '{args.mysql_user}', instead of 'root'.")
+            bsc_util.alert(f"The Mqtt-Broker must be added as mysql user to handle client authentication.\n"
+                           f"Make sure '{args.mysql_user}' has GRANT permissions or the creation of "
+                           f"user, database and/or tables will fail!")
 
         print(f"Testing database connection.. ")
 
@@ -312,18 +301,51 @@ def install():
         conn.commit()
         print("Database and tables created!")
         print()
-        print(f"{bcolors.UNDERLINE}Create EMQX user:{bcolors.ENDC}{bcolors.HEADER}")
+        print(f"{bcolors.UNDERLINE}Create EMQX/MySQL user:{bcolors.ENDC}{bcolors.HEADER}")
         print(f"This account will be used by the EMQX-Dashboard/Mqtt-Broker to authenticate client connections")
-        print(f"and authorize subscriptions and publishes from broker and clients!\n")
+        print(f"and authorize subscriptions and publishes from broker and clients!")
         emqx_username = bsc_util.request_username()
         emqx_password = bsc_util.request_password(True)
+        if args.mqtt_host is None or args.mqtt_host == "":
+            args.mqtt_host = str(click.prompt("Mqtt Host", type=ipaddress.IPv4Address))
 
         emqx_key, emqx_salt = bsc_util.calc_password_hash(emqx_password)
         cursor.execute(query="INSERT INTO mqtt_user "
-                             "(`username`, `password_hash`, `salt`, `is_superuser`) "
-                             "VALUES(%s, %s, %s, %s)",
-                       args=(emqx_username, emqx_key, emqx_salt, 1))
+                             "(`username`, `password_hash`, `salt`, `is_superuser`, `ipaddress`) "
+                             "VALUES(%s, %s, %s, %s, %s)",
+                       args=(emqx_username, emqx_key, emqx_salt, 1, args.mqtt_host))
 
+        conn.commit()
+
+        # creating mysql user connection
+        try:
+            print("Creating user")
+            cursor.execute("SELECT PASSWORD(%s)", args=emqx_password)
+            pw_hash = cursor.fetchone()[0]
+
+            print("Creating user account")
+            qry = f"CREATE USER IF NOT EXISTS '{emqx_username}'@'%' IDENTIFIED BY PASSWORD '{pw_hash}'"
+            #
+            cursor.execute(qry)
+
+            qry = f"SET PASSWORD FOR '{emqx_username}'@'%' = PASSWORD('{emqx_password}')"
+            cursor.execute(qry)
+
+            print("Granting usage")
+            qry = f"GRANT USAGE ON *.* TO '{emqx_username}'@'%'"
+            cursor.execute(qry)
+
+            print("Granting privileges")
+            qry = f"GRANT ALL PRIVILEGES ON `{args.database}`.* TO '{emqx_username}'@'%'"
+            cursor.execute(query=qry)
+
+            conn.commit()
+            print(f"Created mysql user {emqx_username}")
+        except Exception as a:
+            bsc_util.alert(f"Unable to create mysql user '{emqx_username}':")
+            bsc_util.alert(a)
+
+        # Create backend account
         print(f"\n")
         print(f"{bcolors.UNDERLINE}Create Backend user:{bcolors.ENDC}{bcolors.HEADER}")
         print(f"This account will be used by this program to generate status messages,")
@@ -345,7 +367,6 @@ def install():
                        args=(backend_username, backend_key, backend_salt, backend_ip, 1))
 
         # Granting permissions:
-
         # Listen for request for old messages
         cursor.execute(query="INSERT INTO mqtt_acl "
                              "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
@@ -362,7 +383,7 @@ def install():
         cursor.execute(query="INSERT INTO mqtt_acl "
                              "(`ipaddress`, `username`, `action`, `permission`, `topic`) "
                              "VALUES(%s, %s, %s, %s, %s)",
-                       args=(backend_ip, backend_username, 'subscribe', 'allow', 'req/messages'))
+                       args=(backend_ip, backend_username, 'subscribe', 'allow', 'req/settings'))
 
         # Respond to request for server settings
         cursor.execute(query="INSERT INTO mqtt_acl "
@@ -391,13 +412,13 @@ def install():
         print()
         print(f"{bcolors.UNDERLINE}Authentication:{bcolors.ENDC}{bcolors.HEADER}")
         print(f"Type:\t \tPassword-based")
-        print(f"Backend:\t MySQL")
+        print(f"Backend:\tMySQL")
         print()
-        print(f"Server:\t \t \t127.0.0.1:{args.mysql_port}")
+        print(f"Server:\t \t127.0.0.1:{args.mysql_port}")
         print(f"Database:\t{args.database}")
         print(f"Username:\t{emqx_username}")
-        print(f"Password:\t <your_password>")
-        print(f"SQL:\t\t{bcolors.UNDERLINE}leave as default{bcolors.ENDC}{bcolors.HEADER}")
+        print(f"Password:\t<your_password>")
+        print("SQL:\t \tSELECT password_hash, salt FROM mqtt_user where username = ${username} LIMIT 1")
         print("\n")
         print(f"{bcolors.UNDERLINE}Authorization:{bcolors.ENDC}{bcolors.HEADER}")
         print(f"Database:\t{args.database}")
@@ -419,7 +440,7 @@ def install():
 async def list_users():
     try:
         await require_db()
-        await require_mqtt()
+        # await require_mqtt()
 
         conn = pymysql.connect(host=args.mysql_host,
                                port=args.mysql_port,
@@ -451,7 +472,7 @@ async def list_users():
 async def add_user():
 
     await require_db()
-    await require_mqtt()
+    # await require_mqtt()
 
     username = ""
 
@@ -541,7 +562,7 @@ async def add_user():
 
 async def edit_user():
     await require_db()
-    await require_mqtt()
+    # await require_mqtt()
 
     try:
         conn = pymysql.connect(host=args.mysql_host,
@@ -627,9 +648,11 @@ async def edit_user():
                     cursor.execute(query="DELETE FROM mqtt_acl WHERE `username` = %s",
                                    args=username)
                     conn.commit()
+                    bsc_util.alert(f"Deleted user {username}!")
+                else:
+                    print("Aborting..")
                 cursor.close()
                 conn.close()
-                bsc_util.alert(f"Deleted user {username}!")
             case _:
                 return
     except MySQLdb.Error as sqlError:
@@ -652,7 +675,7 @@ async def setup():
         choice = click.prompt("Select option", type=int)
         match choice:
             case 1:
-                install()
+                await install()
             case 2:
                 await main()
             case 3:
@@ -662,13 +685,13 @@ async def setup():
             case 5:
                 await edit_user()
             case 6:
-                bsc_util.request_username()
+                username = click.prompt("Username")
             case 0:
                 print("exit")
                 break
 
 
-async def require_db():
+async def require_db(pref_root: bool = False):
     # MySQL connection:
     if args.mysql_host is None or args.mysql_host == "":
         args.mysql_host = str(click.prompt("Address of the MySQL instance",
@@ -676,16 +699,18 @@ async def require_db():
                                            default="10.66.66.1"))
     if args.mysql_port is None or args.mysql_port == -1:
         args.mysql_port = click.prompt("Port of the MySQL instance", type=int, default=3306)
+
     if args.database is None or args.database == "":
         args.database = click.prompt("Specify database name", type=str, default="mqtt")
+
     if args.mysql_user is None or args.mysql_user == "":
-        args.mysql_user = click.prompt("MySQL username", type=str)
+        if pref_root:
+            args.mysql_user = click.prompt("MySQL username", type=str, default="root")
+        else:
+            args.mysql_user = click.prompt("MySQL username", type=str)
+
     if args.mysql_password is None or args.mysql_password == "":
         args.mysql_password = click.prompt("MySQL password", type=str, hide_input=True)
-
-    if not await test_db_connection():
-        bsc_util.alert("Unable to connect to MySQL server.", color_message=bcolors.FAIL)
-        exit(1)
 
 
 async def require_mqtt():
@@ -734,9 +759,10 @@ async def test_mqtt_connection():
             await client.subscribe("req/settings", 1)
             await client.unsubscribe("req/settings")
             await client.disconnect()
+            print("Mqtt test successful")
+            return True
     except:
         return False
-    return True
 
 
 async def main():
