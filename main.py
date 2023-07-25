@@ -133,8 +133,8 @@ async def listen():
                                   tls_params=tls_params) as client:
 
             async with client.messages() as messages:
-                await client.subscribe("req/settings", 1)
-                await client.subscribe("req/messages", 1)
+                await client.subscribe("req/settings", 2)
+                await client.subscribe("req/messages", 2)
 
                 async for message in messages:
                     if message.topic.matches("req/messages"):
@@ -145,12 +145,12 @@ async def listen():
                             for entry in message_list:
                                 e = str(entry.to_json())
                                 print(f"\t{e}")
-                                await client.publish("res/messages", qos=1, payload=e)
+                                await client.publish("res/messages", qos=2, payload=e)
 
                     if message.topic.matches("req/settings"):
                         print(f"Caught request for settings.")
                         cfg = await get_settings()
-                        await client.publish("res/settings", str(cfg), 1, False)
+                        await client.publish("res/settings", str(cfg), 2, False)
                         print(f"Responded with [{cfg}]")
     except Exception:
         bsc_util.alert(f"Unable to connect to mqtt server")
@@ -173,19 +173,19 @@ async def publish_generator():
             for i in range(0, random.randint(5, 7)):
                 msg = MessageWrapper.randomize(cfg)
                 print(f"Initial generation [{i}]: {msg.to_string()}")
-                await client.publish("messages/add", qos=1, payload=msg.to_json())
+                await client.publish("messages/add", qos=2, payload=msg.to_json())
                 async with lock:
                     message_list.append(msg)
 
             # Loop
             while True:
                 # Generate random number. If list is empty or picked number large enough, generate message
-                if random.randint(0, 100) > 50 or len(message_list) == 0:
+                if (random.randint(0, 100) >= 50 and len(message_list) < 15) or len(message_list) == 0:
                     print("Publishing..")
                     msg = MessageWrapper.randomize(cfg)
                     print(f"Generated message with id [{msg.id}]")
                     # await client.publish("mqtt/test", qos=1, payload=b"Das ist ein Test")
-                    await client.publish("messages/add", qos=1, payload=msg.to_json())
+                    await client.publish("messages/add", qos=2, payload=msg.to_json())
                     async with lock:
                         message_list.append(msg)
 
@@ -196,7 +196,7 @@ async def publish_generator():
                         msg = message_list[index]
                         message_list.remove(msg)
                         print(f"Removing message: {msg.id}. There are {len(message_list)} entries left.")
-                    await client.publish("messages/remove", qos=1, payload=msg.to_json())
+                    await client.publish("messages/remove", qos=2, payload=msg.to_json())
                 await asyncio.sleep(1)
     except:
         bsc_util.alert("")

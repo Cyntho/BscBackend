@@ -13,8 +13,8 @@ def randomize(cfg: Settings):
         #location = random.choice(cfg.get_locations())
 
         available_locations = cfg.get_locations()
-        # location_id = random.randint(0, len(available_locations) - 1)
-        location_id = 0
+        location_id = random.randint(0, len(available_locations) - 1)
+        #location_id = 0
         location = available_locations[location_id]
 
         sps = random.choice(location["SPS"])
