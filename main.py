@@ -112,6 +112,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 
+# Getter for settings
 async def get_settings():
     temp = Settings("settings.json").get_locations()
     i = 0
@@ -121,6 +122,7 @@ async def get_settings():
     return temp
 
 
+# Listener for req/settings and req/messages
 async def listen():
     try:
         print("Attempting to listen")
@@ -157,6 +159,7 @@ async def listen():
         pass
 
 
+# Publisher for messages (adding and removing)
 async def publish_generator():
     try:
         async with aiomqtt.Client(hostname=args.mqtt_host,
@@ -202,6 +205,7 @@ async def publish_generator():
         bsc_util.alert("")
 
 
+# admin install script
 async def install():
     conn: pymysql.connections.Connection
     try:
@@ -437,6 +441,8 @@ async def install():
         return
 
 
+# print users to admin panel
+# Broker and SuperUser are not printed
 async def list_users():
     try:
         await require_db()
@@ -469,6 +475,7 @@ async def list_users():
         bsc_util.alert(f"Could not connect to the database: {ex}", color_message=bcolors.FAIL)
 
 
+# Add a client
 async def add_user():
 
     await require_db()
@@ -560,6 +567,8 @@ async def add_user():
         print(f"Conversion error: {v}")
 
 
+# Editing clients (ip, pass, delete)
+# Broker and SuperUser not editable
 async def edit_user():
     await require_db()
     # await require_mqtt()
